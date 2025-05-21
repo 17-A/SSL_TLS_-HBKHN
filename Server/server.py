@@ -44,7 +44,7 @@ def main():
     bindsocket.bind(('0.0.0.0', 2021))
     bindsocket.listen(5)
 
-    print("[*] Secure Chat Server (Tailscale) is listening on port 12345...")
+    print("[*] Secure Chat Server (Tailscale) is listening on port 2021...")
 
     try:
         while True:
