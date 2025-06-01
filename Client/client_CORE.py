@@ -42,10 +42,12 @@ class SSLClient:
                     self.display_callback("[!] Mất kết nối với server.")
                     break
                 message = data.decode()
+                print(f"[DEBUG] Nhận được từ server: {message}")  # Thêm dòng này
                 self.display_callback(message)
             except Exception as e:
                 self.display_callback(f"[!] Lỗi khi nhận: {e}")
                 break
+
 
     def send(self, message):
         try:

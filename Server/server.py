@@ -1,6 +1,7 @@
 import socket
 import ssl
 import threading
+import sys
 
 clients = []
 
@@ -9,11 +10,12 @@ def broadcast(message, sender_conn):
         if client != sender_conn:
             try:
                 client.send(message)
-            except:
-                pass
+                print(f"[<] Message sent to another client")
+            except Exception as e:
+                print(f"[!] Error sending to another client: {e}")
 
 def handle_client(connstream, address):
-    print(f"[+] Client connected: {address}")
+    print(f"[+] Client connected from {address} — currently {len(clients) + 1} client(s) connected")
     clients.append(connstream)
 
     try:
@@ -22,11 +24,12 @@ def handle_client(connstream, address):
             if not data:
                 break
             print(f"[{address}] {data.decode()}")
+            print(f"[>] Message from {address}: {data.decode().strip()}")
             broadcast(data, connstream)
     except Exception as e:
         print(f"[!] Error with {address}: {e}")
     finally:
-        print(f"[-] Client disconnected: {address}")
+        print(f"[-] Client {address} disconnected. Remaining clients: {len(clients) - 1}")
         if connstream in clients:
             clients.remove(connstream)
         connstream.close()
@@ -45,6 +48,17 @@ def main():
     bindsocket.listen(5)
 
     print("[*] Secure Chat Server (Tailscale) is listening on port 2021...")
+
+    # Luồng riêng để cho phép gõ lệnh tắt server
+    def shutdown_listener():
+        while True:
+            cmd = input()
+            if cmd.strip().lower() == "exit":
+                print("[!] Shutting down server as requested...")
+                bindsocket.close()
+                sys.exit(0)
+
+    threading.Thread(target=shutdown_listener, daemon=True).start()
 
     try:
         while True:
