@@ -3,6 +3,7 @@ import ssl
 import json
 import threading
 import time
+from datetime import datetime # Import datetime
 
 # Host và Port của server
 # Sử dụng '100.85.83.9' nếu bạn đang dùng Tailscale và server cũng dùng IP đó.
@@ -32,8 +33,10 @@ class SSLClient:
         context.verify_mode = ssl.CERT_REQUIRED # Bắt buộc xác minh chứng chỉ server
 
         # Client cung cấp chứng chỉ của mình cho server (Mutual TLS)
-        # Đảm bảo đường dẫn này đúng từ thư mục của client_CORE.py.
-        context.load_cert_chain(certfile="client_cert.pem", keyfile="client_key.pem")
+        # Đảm bảo đường dẫn này đúng từ thư thư mục của client_CORE.py.
+        context.load_cert_chain(certfile="client_cert.pem", keyfile="client_key.pem") 
+        #*** context.load_cert_chain(certfile="fake_client_cert.pem", keyfile="fake_client_key.pem") check về việc dùng sai chứng chỉ + khóa
+
 
         # TẮT hostname verification nếu cert common name không khớp với HOST
         # Chỉ làm điều này trong môi trường phát triển nếu bạn gặp lỗi hostname mismatch
@@ -42,7 +45,7 @@ class SSLClient:
         return context
 
     def connect(self):
-        self.display_callback("[+] Đang cố gắng kết nối tới server...")
+        print("[+] Đang cố gắng kết nối tới server...")
         try:
             # Tạo socket TCP cơ bản
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -55,9 +58,13 @@ class SSLClient:
             # server_hostname=HOST: Đây là tên máy chủ mà client mong đợi từ chứng chỉ của server.
             # Rất quan trọng cho việc xác thực TLS. Đảm bảo nó khớp với Common Name (CN) trong cert.pem của server.
             self.ssl_socket = context.wrap_socket(sock, server_hostname=HOST) 
+            if self.ssl_socket:
+                cipher_info = self.ssl_socket.cipher()
+                print(f"[🔐] Kết nối SSL đã thiết lập.")
+                print(f"[🔒] Thuật toán mã hóa đang sử dụng: {cipher_info[0]} ({cipher_info[2]}-bit), Giao thức: {cipher_info[1]}")
 
-            self.display_callback(f"[+] Kết nối đến server {HOST}:{PORT} thành công.")
-            
+            print(f"[+] Kết nối đến server thành công.")
+
             # --- ĐĂNG NHẬP NGƯỜI DÙNG SAU KHI KẾT NỐI TLS ---
             if self.ssl_socket: # Thêm kiểm tra này để đảm bảo socket hợp lệ trước khi gửi
                 if self.username_callback:
@@ -68,27 +75,27 @@ class SSLClient:
                 login_message = {
                     "type": "login",
                     "username": self.username,
-                    "timestamp": time.strftime("%H:%M:%S", time.gmtime())
+                    "timestamp": time.time() # Sử dụng Unix timestamp
                 }
                 self.send_json(login_message) # Gọi send_json để gửi tin nhắn đăng nhập
-                self.display_callback(f"[+] Đã gửi yêu cầu đăng nhập với tên: {self.username}")
+                print(f"[+] Đã gửi yêu cầu đăng nhập với tên: {self.username}")
             else:
-                self.display_callback(f"[!] Không thể gửi yêu cầu đăng nhập. Kết nối SSL chưa được thiết lập.")
+                print(f"[!] Không thể gửi yêu cầu đăng nhập. Kết nối SSL chưa được thiết lập.")
 
             # Bắt đầu luồng nhận tin nhắn
             threading.Thread(target=self.receive_messages, daemon=True).start()
 
         except ssl.SSLError as e:
-            self.display_callback(f"[!] Lỗi SSL/TLS khi kết nối: {e}\nĐảm bảo chứng chỉ server được tin cậy và Mutual TLS được cấu hình đúng.")
+            print(f"[!] Lỗi SSL/TLS khi kết nối: {e}\nĐảm bảo chứng chỉ server được tin cậy và Mutual TLS được cấu hình đúng.")
             self.disconnect()
         except socket.timeout:
-            self.display_callback("[!] Timeout khi kết nối. Server có thể không phản hồi.")
+            print("[!] Timeout khi kết nối. Server có thể không phản hồi.")
             self.disconnect()
         except socket.error as e:
-            self.display_callback(f"[!] Lỗi socket khi kết nối: {e}\nKiểm tra IP/Port hoặc kết nối mạng.")
+            print(f"[!] Lỗi socket khi kết nối: {e}\nKiểm tra IP/Port hoặc kết nối mạng.")
             self.disconnect()
         except Exception as e:
-            self.display_callback(f"[!] Lỗi kết nối không xác định: {e}")
+            print(f"[!] Lỗi kết nối không xác định: {e}")
             self.disconnect()
 
     def receive_messages(self):
@@ -108,19 +115,32 @@ class SSLClient:
                     message_type = message.get("type", "unknown")
                     sender = message.get("sender", "Hệ thống")
                     content = message.get("content", "")
-                    timestamp = message.get("timestamp", time.strftime("%H:%M:%S", time.gmtime()))
                     
+                    # Chuyển đổi timestamp từ Unix timestamp sang định dạng chuỗi hiển thị
+                    timestamp_unix = message.get("timestamp")
+                    if timestamp_unix:
+                        timestamp_str = datetime.fromtimestamp(timestamp_unix).strftime("%H:%M:%S")
+                    else:
+                        timestamp_str = datetime.now().strftime("%H:%M:%S") # Fallback nếu không có timestamp
+
                     if message_type == "user_list":
                         # message['content'] sẽ là một list các username
-                        self.display_callback(f"[Hệ thống]: Danh sách người dùng online: {', '.join(content)}")
+                        # Chúng ta sẽ không hiển thị tin nhắn hệ thống này trong khung chat nữa, 
+                        # thay vào đó chỉ cập nhật danh sách người dùng trên GUI.
+                        # self.display_callback(f"[Hệ thống]: Danh sách người dùng online: {', '.join(content)}")
                         # Phát tín hiệu cập nhật danh sách người dùng lên GUI (nếu có dispatcher)
                         if hasattr(self.display_callback.__self__, 'dispatcher'):
                             self.display_callback.__self__.dispatcher.user_list_updated.emit(content)
                     elif message_type == "private_chat":
                         # Tin nhắn riêng tư từ người khác
-                        self.display_callback(content, sender_name=f"[RIÊNG TƯ TỪ] {sender}", timestamp=timestamp, is_private=True)
-                    else: # Bao gồm "chat", "system", hoặc các loại khác
-                        self.display_callback(content, sender_name=sender, timestamp=timestamp)
+                        self.display_callback(content, sender_name=f"[RIÊNG TƯ TỪ] {sender}", timestamp=timestamp_str, is_private=True)
+                    elif message_type == "system": # XỬ LÝ CẢ TIN NHẮN HỆ THỐNG Ở ĐÂY
+                        self.display_callback(content, sender_name=sender, timestamp=timestamp_str) # Hiển thị trong khung chat
+                    elif message_type == "chat": # Bao gồm "chat"
+                        self.display_callback(content, sender_name=sender, timestamp=timestamp_str)
+                    elif message_type == "history": # Xử lý lịch sử tin nhắn
+                        if hasattr(self.display_callback.__self__, 'dispatcher'):
+                            self.display_callback.__self__.dispatcher.message_history_received.emit(content) # Phát tín hiệu lịch sử
 
                 except json.JSONDecodeError:
                     self.display_callback(f"[!] Nhận được dữ liệu không phải JSON từ server: {data.decode(errors='ignore')}")
@@ -152,8 +172,8 @@ class SSLClient:
         chat_message = {
             "type": "chat",  # Đảm bảo type là "chat"
             "sender": self.username,
-            "content": message,
-            "timestamp": time.strftime("%H:%M:%S", time.gmtime())
+            "content": message
+            # Timestamp sẽ được server thêm vào để đảm bảo đồng bộ
         }
         self.send_json(chat_message)
         # self.display_callback(f"[+] Đã gửi tin nhắn chat: {message}") # Có thể bỏ dòng này nếu GUI tự hiển thị tin nhắn đã gửi
@@ -172,8 +192,8 @@ class SSLClient:
             "type": "private_chat",
             "sender": self.username,
             "receiver": recipient_username,
-            "content": message,
-            "timestamp": time.strftime("%H:%M:%S", time.gmtime())
+            "content": message
+            # Timestamp sẽ được server thêm vào để đảm bảo đồng bộ
         }
         self.send_json(private_message)
         # GUI sẽ tự hiển thị tin nhắn đã gửi, nên không cần display_callback ở đây
@@ -185,11 +205,11 @@ class SSLClient:
 
         request_message = {
             "type": "request_user_list",
-            "sender": self.username if self.username else "Guest",
-            "timestamp": time.strftime("%H:%M:%S", time.gmtime())
+            "sender": self.username if self.username else "Guest"
+            # Timestamp không cần thiết cho request này
         }
         self.send_json(request_message)
-        self.display_callback("[+] Đã yêu cầu danh sách người dùng online từ server.")
+        print("[+] Đã yêu cầu danh sách người dùng online từ server.")
 
     def send_json(self, data):
         """Gửi dữ liệu JSON qua SSL socket."""
@@ -210,8 +230,9 @@ class SSLClient:
             try:
                 self.ssl_socket.shutdown(socket.SHUT_RDWR)
                 self.ssl_socket.close()
-                self.display_callback("[!] Đã ngắt kết nối với server.")
+                print("[!] Đã ngắt kết nối với server.")
             except Exception as e:
-                self.display_callback(f"[-] Lỗi khi đóng socket: {e}")
+                print(f"[-] Lỗi khi đóng socket: {e}")
             finally:
                 self.ssl_socket = None
+

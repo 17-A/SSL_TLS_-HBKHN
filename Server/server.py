@@ -3,6 +3,7 @@ import ssl
 import threading
 import json
 import time
+from datetime import datetime # Import datetime cho việc định dạng timestamp
 
 # Cấu hình Host và Port
 HOST = '0.0.0.0' # Lắng nghe trên tất cả các interface
@@ -11,6 +12,10 @@ PORT = 2021
 # Danh sách người dùng online và lock để đồng bộ hóa truy cập
 online_users = {}
 online_users_lock = threading.Lock()
+
+# Lịch sử tin nhắn
+message_history = []
+message_history_lock = threading.Lock() # Lock để đồng bộ hóa truy cập lịch sử tin nhắn
 
 # Cờ để kiểm soát việc dừng server
 server_running = True
@@ -41,9 +46,21 @@ def notify_user_status(username, status):
         "type": "system",
         "sender": "Hệ thống",
         "content": f"Người dùng '{username}' đã {status}.",
-        "timestamp": time.strftime("%H:%M:%S", time.gmtime())
+        "timestamp": time.time() # Sử dụng Unix timestamp
     }
-    broadcast(status_message) # Gửi tới tất cả, bao gồm cả người vừa online/offline
+    broadcast(status_message, is_system_notification=True)
+    # Sau khi thông báo trạng thái, gửi cập nhật danh sách người dùng cho TẤT CẢ client
+    with online_users_lock:
+        users = list(online_users.keys())
+    
+    user_list_message = {
+        "type": "user_list",
+        "sender": "Hệ thống",
+        "content": users,
+        "timestamp": time.time()
+    }
+    broadcast(user_list_message, is_system_notification=True)
+
 
 def send_online_users_list(connstream, target_username):
     """Gửi danh sách người dùng online hiện tại tới một client cụ thể."""
@@ -54,7 +71,7 @@ def send_online_users_list(connstream, target_username):
         "type": "user_list",
         "sender": "Hệ thống",
         "content": users,
-        "timestamp": time.strftime("%H:%M:%S", time.gmtime())
+        "timestamp": time.time() # Sử dụng Unix timestamp
     }
     try:
         connstream.sendall(json.dumps(user_list_message).encode('utf-8'))
@@ -62,12 +79,28 @@ def send_online_users_list(connstream, target_username):
     except (socket.error, ssl.SSLError, Exception) as e:
         print(f"[-] Lỗi khi gửi danh sách người dùng tới {target_username}: {e}")
 
-def broadcast(message_obj, sender_conn=None):
+# Thêm hàm mới để gửi lịch sử tin nhắn
+def send_message_history(connstream):
+    """Gửi toàn bộ lịch sử tin nhắn cho một client cụ thể."""
+    with message_history_lock:
+        history_message = {
+            "type": "history",
+            "content": message_history,
+            "timestamp": time.time()
+        }
+    try:
+        connstream.sendall(json.dumps(history_message).encode('utf-8'))
+        print("[+] Đã gửi lịch sử tin nhắn.")
+    except (socket.error, ssl.SSLError, Exception) as e:
+        print(f"[-] Lỗi khi gửi lịch sử tin nhắn: {e}")
+
+# Thêm tham số is_system_notification để kiểm soát việc gửi lại cho người gửi
+def broadcast(message_obj, sender_conn=None, is_system_notification=False):
     """Gửi một tin nhắn JSON tới tất cả các client online."""
     message_json = json.dumps(message_obj)
     message_bytes = message_json.encode('utf-8')
 
-    print(f"[DEBUG] Bắt đầu broadcast. Nội dung: {message_obj.get('content', '')} từ {message_obj.get('sender', 'Unknown')}") # DEBUG LOG
+    print(f"[DEBUG] Bắt đầu broadcast. Nội dung: {message_obj.get('content', '')} từ {message_obj.get('sender', 'Unknown')} (Type: {message_obj.get('type')})") # DEBUG LOG
     with online_users_lock:
         print(f"[DEBUG] Số lượng người dùng online trong lock: {len(online_users)}") # DEBUG LOG
         
@@ -78,16 +111,13 @@ def broadcast(message_obj, sender_conn=None):
                 if c == sender_conn:
                     sender_username_for_debug = u
                     break
-        print(f"[DEBUG] Người gửi tin nhắn gốc: {sender_username_for_debug}")
+        print(f"[DEBUG] Người gửi tin nhắn gốc: {sender_username_for_debug}") # DEBUG LOG
 
         clients_to_remove = []
         sent_count = 0 
         for username, connstream in online_users.items():
-            # Điều kiện này ngăn tin nhắn gửi lại cho chính người gửi
-            if connstream != sender_conn: 
-                # Dựa vào các log trước đó, bạn đã bỏ comment điều kiện này để test,
-                # nên tôi sẽ giữ nguyên việc broadcast tới tất cả.
-                
+            # Điều kiện này ngăn tin nhắn gửi lại cho chính người gửi, trừ khi là thông báo hệ thống
+            if connstream != sender_conn or is_system_notification:
                 print(f"[DEBUG] Đang cố gắng gửi tới: {username}") # DEBUG LOG
                 try:
                     connstream.sendall(message_bytes)
@@ -167,8 +197,9 @@ def handle_client(connstream, address):
 
                     online_users[client_username] = connstream
                 print(f"[+] Người dùng '{client_username}' đã đăng nhập.")
-                notify_user_status(client_username, "online")
+                notify_user_status(client_username, "online") # Gọi hàm notify_user_status
                 send_online_users_list(connstream, client_username) # Gửi danh sách người dùng cho người mới đăng nhập
+                send_message_history(connstream) # Gửi lịch sử tin nhắn cho người mới đăng nhập
             else:
                 print(f"[-] Lỗi đăng nhập từ {address}: Không có username.")
                 return
@@ -195,24 +226,26 @@ def handle_client(connstream, address):
                 sender = message_obj.get("sender", "Unknown")
                 content = message_obj.get("content", "")
 
-                print(f"[<] Nhận từ '{sender}' ({address}) [Type: {message_type}]: {content}")
+                print(f"[<] Nhận từ '{sender}' ({address}) [Type: {message_type}]: {content}") #
 
                 if message_type == "chat":
                     # Tin nhắn chat chung
-                    if "timestamp" not in message_obj:
-                         message_obj["timestamp"] = time.strftime("%H:%M:%S", time.gmtime())
+                    message_obj["timestamp"] = time.time() # Thêm timestamp server vào đây
+                    with message_history_lock: # Thêm tin nhắn vào lịch sử
+                        message_history.append(message_obj)
                     broadcast(message_obj, connstream) 
                     print(f"[DEBUG] Đã gọi broadcast cho tin nhắn chat từ '{sender}'.") # DEBUG LOG
                 elif message_type == "private_chat":
                     # Tin nhắn riêng tư
                     receiver = message_obj.get("receiver")
                     if receiver and sender: 
+                        message_obj["timestamp"] = time.time() # Thêm timestamp server vào đây
                         if not send_private_message(sender, receiver, message_obj):
                             feedback_msg = {
                                 "type": "system",
                                 "sender": "Hệ thống",
                                 "content": f"Người dùng '{receiver}' hiện không online hoặc không thể nhận tin nhắn của bạn.",
-                                "timestamp": time.strftime("%H:%M:%S", time.gmtime())
+                                "timestamp": time.time() # Sử dụng Unix timestamp
                             }
                             try:
                                 connstream.sendall(json.dumps(feedback_msg).encode('utf-8'))
@@ -224,7 +257,7 @@ def handle_client(connstream, address):
                             "type": "system",
                             "sender": "Hệ thống",
                             "content": "Lỗi: Tin nhắn riêng tư thiếu thông tin người nhận hoặc người gửi.",
-                            "timestamp": time.strftime("%H:%M:%S", time.gmtime())
+                            "timestamp": time.time() # Sử dụng Unix timestamp
                         }
                         try:
                             connstream.sendall(json.dumps(error_msg).encode('utf-8'))
@@ -241,7 +274,7 @@ def handle_client(connstream, address):
                         "type": "system",
                         "sender": "Hệ thống",
                         "content": f"Lỗi: Loại tin nhắn '{message_type}' không xác định.",
-                        "timestamp": time.strftime("%H:%M:%S", time.gmtime())
+                        "timestamp": time.time() # Sử dụng Unix timestamp
                     }
                     try:
                         connstream.sendall(json.dumps(error_msg).encode('utf-8'))
@@ -267,7 +300,7 @@ def handle_client(connstream, address):
                 if client_username in online_users:
                     del online_users[client_username]
             print(f"[-] Người dùng '{client_username}' ({address}) đã ngắt kết nối và bị xóa.")
-            notify_user_status(client_username, "offline")
+            notify_user_status(client_username, "offline") # Gọi hàm notify_user_status
         try:
             connstream.shutdown(socket.SHUT_RDWR)
             connstream.close()
@@ -285,9 +318,6 @@ def main():
     server_socket.listen(5)
     print(f"[+] Server đang lắng nghe trên {HOST}:{PORT}...")
 
-    # Chạy vòng lặp chấp nhận kết nối trong một luồng riêng hoặc luồng chính
-    # Để có thể xử lý tín hiệu dừng server, chúng ta sẽ chấp nhận kết nối có timeout
-    
     # Tạo một luồng để xử lý việc dừng server bằng lệnh 'exit'
     def server_input_handler():
         global server_running
@@ -348,3 +378,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
