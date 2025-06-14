@@ -35,7 +35,7 @@ class SSLClient:
         # Client cung cấp chứng chỉ của mình cho server (Mutual TLS)
         # Đảm bảo đường dẫn này đúng từ thư thư mục của client_CORE.py.
         context.load_cert_chain(certfile="client_cert.pem", keyfile="client_key.pem") 
-        #*** context.load_cert_chain(certfile="fake_client_cert.pem", keyfile="fake_client_key.pem") check về việc dùng sai chứng chỉ + khóa
+        # context.load_cert_chain(certfile="fake_client_cert.pem", keyfile="fake_client_key.pem") # check về việc dùng sai chứng chỉ + khóa
 
 
         # TẮT hostname verification nếu cert common name không khớp với HOST
